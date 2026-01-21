@@ -116,60 +116,6 @@ def report_from_dict_to_df(dict_report):
 
 
 
-def extract_values_by_strate(ari_path, vector_path, field="strate"):
-
-    ds = gdal.Open(ari_path)
-    band = ds.GetRasterBand(1)
-    ari = band.ReadAsArray()
-    nodata = band.GetNoDataValue()
-
-    geo = ds.GetGeoTransform()
-    proj = ds.GetProjection()
-    rows, cols = ari.shape
-
-    vect_ds = ogr.Open(vector_path)
-    layer = vect_ds.GetLayer()
-
-    # Strates uniques
-    strates = set(f.GetField(field) for f in layer)
-    layer.ResetReading()
-
-    means = {}
-    stds  = {}
-
-    for s in strates:
-
-        # --- raster masque MEM ---
-        mask_ds = gdal.GetDriverByName("MEM").Create("", cols, rows, 1, gdal.GDT_Byte)
-        mask_ds.SetGeoTransform(geo)
-        mask_ds.SetProjection(proj)
-
-        mb = mask_ds.GetRasterBand(1)
-        mb.Fill(0)
-
-        # --- FILTRE PAR STRATE ---
-        layer.SetAttributeFilter(f"{field} = {s}")
-
-        # rasterisation des polygones filtrés
-        gdal.RasterizeLayer(mask_ds, [1], layer, burn_values=[1])
-
-        mask = mb.ReadAsArray()
-
-        # Remettre filtre à zéro pour sécurité
-        layer.SetAttributeFilter(None)
-
-        values = ari[(mask == 1) & (ari != nodata)]
-
-        if values.size > 0:
-            means[s] = float(np.mean(values))
-            stds[s]  = float(np.std(values))
-
-    ds = None
-    vect_ds = None
-
-    return means, stds
-
-
 
 def rasterize_shapefile(shapefile, ref_raster, out_raster, field_name):
     """
@@ -203,48 +149,6 @@ def rasterize_shapefile(shapefile, ref_raster, out_raster, field_name):
 
     import numpy as np
 
-def extract_stats_by_class(image, mask, classes, nodata=-9999):
-    """
-    Calcule la moyenne et l'écart-type par classe et par date.
-
-    Parameters
-    ----------
-    image : ndarray (rows, cols, dates)
-        Série temporelle (ex: ARI)
-    mask : ndarray (rows, cols)
-        Raster des classes
-    classes : list
-        Liste des labels de classes à analyser
-    nodata : float
-        Valeur nodata à exclure
-
-    Returns
-    -------
-    means : ndarray (nb_classes, nb_dates)
-    stds : ndarray (nb_classes, nb_dates)
-    """
-
-    nb_dates = image.shape[2]
-    nb_classes = len(classes)
-
-    means = np.zeros((nb_classes, nb_dates))
-    stds = np.zeros((nb_classes, nb_dates))
-
-    for i, cls in enumerate(classes):
-        cls_mask = mask == cls
-
-        for d in range(nb_dates):
-            values = image[:, :, d][cls_mask]
-            values = values[values != nodata]
-
-            if values.size > 0:
-                means[i, d] = np.mean(values)
-                stds[i, d] = np.std(values)
-            else:
-                means[i, d] = np.nan
-                stds[i, d] = np.nan
-
-    return means, stds
 
 
 def merge_and_save_multiband(

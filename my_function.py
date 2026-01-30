@@ -1,7 +1,29 @@
+"""
+Ce fichier regroupe l’ensemble des fonctions utilisées dans le projet de télédétection pour le traitement, l’analyse et la production de données raster et vectorielles. Il s’appuie principalement sur les bibliothèques GDAL, NumPy et Pandas pour la manipulation de données géospatiales.
+
+Il permet notamment :
+
+de calculer des indices spectraux, en particulier l’Anthocyanin Reflectance Index (ARI) à partir de séries temporelles multi-bandes, et de les exporter sous forme de GeoTIFF géoréférencés;
+
+d’extraire et afficher les métadonnées raster essentielles (résolution, type de données, NoData, projection) afin de vérifier la cohérence des jeux de données ;
+
+de rasteriser des données vectorielles (shapefiles) en les alignant sur un raster de référence, facilitant ainsi les analyses spatiales croisées ;
+
+de calculer des statistiques par classe (moyenne et écart-type) sur des séries temporelles raster, utiles pour l’analyse thématique ou le suivi temporel ;
+
+de fusionner plusieurs rasters multibandes en un seul fichier homogène ;
+
+d’exporter des images classifiées en conservant la géoréférence et en imposant une valeur NoData spécifique ;
+
+de mettre en forme des résultats de classification sous forme de DataFrame pour une exploitation statistique ou graphique.
+"""
+
 import numpy as np
 from osgeo import gdal, osr, ogr
 import pandas as pd
 import os
+
+
 
 def calculate_ari(band3_path, band5_path, output_path):
     """
@@ -64,7 +86,7 @@ def calculate_ari(band3_path, band5_path, output_path):
     band5_ds = None
     out_ds = None
 
-    print("✅ Fichier ARI_serie_temp.tif créé avec succès (série temporelle multi-bandes)")
+    print("Fichier ARI_serie_temp.tif créé avec succès (série temporelle multi-bandes)")
 
 
 
@@ -119,39 +141,80 @@ def report_from_dict_to_df(dict_report):
     return report_df
 
 
-
-
 def rasterize_shapefile(shapefile, ref_raster, out_raster, field_name):
     """
     Rasterize a vector shapefile to match a reference raster using GDAL.
     """
     # Ouvrir raster de référence
     ref_ds = gdal.Open(ref_raster)
+    if ref_ds is None:
+        print(f"Erreur: Impossible d'ouvrir {ref_raster}")
+        return False
+    
     x_res = ref_ds.RasterXSize
     y_res = ref_ds.RasterYSize
     geotransform = ref_ds.GetGeoTransform()
     proj = ref_ds.GetProjection()
+    
+    # Fermer le raster de référence
+    ref_ds = None
 
     # Créer raster de sortie
     driver = gdal.GetDriverByName("GTiff")
     out_ds = driver.Create(out_raster, x_res, y_res, 1, gdal.GDT_Byte)
+    
+    if out_ds is None:
+        print(f"Erreur: Impossible de créer {out_raster}")
+        return False
+    
     out_ds.SetGeoTransform(geotransform)
     out_ds.SetProjection(proj)
+    
+    # Initialiser la bande avec 0 (ou autre valeur NoData)
+    band = out_ds.GetRasterBand(1)
+    band.SetNoDataValue(0)  # Ou -9999 si vos valeurs de field_name contiennent 0
+    band.Fill(0)
+    band.FlushCache()
 
     # Ouvrir shapefile
     shp_ds = ogr.Open(shapefile)
+    if shp_ds is None:
+        print(f"Erreur: Impossible d'ouvrir {shapefile}")
+        out_ds = None
+        return False
+    
     shp_layer = shp_ds.GetLayer()
 
-    # Rasteriser
-    gdal.RasterizeLayer(out_ds, [1], shp_layer, options=[f"ATTRIBUTE={field_name}"])
+    # Rasteriser AVEC ALL_TOUCHED
+    options = [
+        f"ATTRIBUTE={field_name}",
+        "ALL_TOUCHED=TRUE"  # ← AJOUT CRUCIAL
+    ]
+    
+    print(f"Rasterisation en cours avec ALL_TOUCHED=TRUE...")
+    result = gdal.RasterizeLayer(out_ds, [1], shp_layer, options=options)
+    
+    if result != 0:
+        print(f"Erreur lors de la rasterisation (code: {result})")
+        band = None
+        out_ds = None
+        shp_ds = None
+        return False
+    
+    # Vérification
+    band.FlushCache()
+    data = band.ReadAsArray()
+    pixels_rasterises = (data != 0).sum()
+    
+    print(f"Raster créé : {out_raster}")
+    print(f"Pixels rasterisés: {pixels_rasterises:,}")
 
     # Fermer fichiers
+    band = None
     out_ds = None
     shp_ds = None
-
-    print(f"Raster créé : {out_raster}")
-
-    import numpy as np
+    
+    return True
 
 
 
@@ -197,7 +260,6 @@ def compute_class_statistics(image, mask, classes, nodata=-9999):
                 stds[i, d] = np.nan
 
     return means, stds
-
 
 
 def merge_and_save_multiband(
@@ -284,22 +346,6 @@ def merge_and_save_multiband(
     out_ds = None  # fermeture du fichier
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def write_classified_image_nodata0(
     out_filename,
     classified_image,
@@ -352,35 +398,3 @@ def write_classified_image_nodata0(
     out_ds = None
 
     print(f" Image enregistrée avec un type int8 et NoData = 0 : {out_filename}")
-
-def rasterize_vector(vector_path, ref_raster_path, output_path, attribute="strate"):
-    ds_ref = gdal.Open(ref_raster_path)
-    if ds_ref is None:
-        raise IOError("Impossible d'ouvrir le raster de référence")
-
-    gt = ds_ref.GetGeoTransform()
-    proj = ds_ref.GetProjection()
-    cols = ds_ref.RasterXSize
-    rows = ds_ref.RasterYSize
-
-    driver = gdal.GetDriverByName("GTiff")
-    ds_out = driver.Create(output_path, cols, rows, 1, gdal.GDT_Byte)
-    ds_out.SetGeoTransform(gt)
-    ds_out.SetProjection(proj)
-
-    band = ds_out.GetRasterBand(1)
-    band.SetNoDataValue(0)
-    band.Fill(0)
-
-    vect_ds = ogr.Open(vector_path)
-    layer = vect_ds.GetLayer()
-
-    gdal.RasterizeLayer(ds_out, [1], layer, options=[f"ATTRIBUTE={attribute}"])
-
-    ds_out = None
-    vect_ds = None
-    ds_ref = None
-
-    print(f"✅ Rasterisation terminée : {output_path}")
-    return output_path
-
